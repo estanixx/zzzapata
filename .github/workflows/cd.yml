@@ -1,0 +1,71 @@
+# Runs on every push to `main`: calls the shared `ci.yml` quality gate,
+# then — only if CI passed — assumes the scoped apply role via OIDC and runs
+# `terraform apply` against `environments/prod`. `main` should only ever
+# receive pushes through a merged, checks-green PR once branch protection is
+# enabled (design D3, post-merge); this workflow does not itself enforce
+# that.
+#
+# `concurrency` below shares its group name with pr.yml's, on purpose: both
+# workflows take an S3 native lock (`use_lockfile`) on the SAME state object
+# (`zzzapata/prod/terraform.tfstate`), and an apply and a plan racing for the
+# same lock fails loudly (PreconditionFailed / "Error acquiring the state
+# lock") rather than queueing. A shared group serializes plan/apply across
+# both workflows so only one runs at a time.
+#
+# Deliberately absent: a Docker/container build or push step. `container/`
+# does not exist in this repo yet (spec C2/C4) — this gap is temporary and is
+# called out in the PR description, not silently omitted.
+name: cd
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.11.4"
+
+jobs:
+  ci:
+    name: ci
+    uses: ./.github/workflows/ci.yml
+
+  apply:
+    name: apply
+    needs: ci
+    runs-on: ubuntu-latest
+    concurrency:
+      group: zzzapata-terraform-state
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (apply role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      # Reuses scripts/tf-init.sh so the local, PR-plan, and apply init
+      # commands can never drift apart.
+      - name: terraform init (environments/prod)
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        run: ./scripts/tf-init.sh environments/prod
+
+      # container/ push step intentionally omitted here — see file header.
+
+      - name: terraform apply (environments/prod)
+        working-directory: environments/prod
+        run: terraform apply -auto-approve -no-color -input=false

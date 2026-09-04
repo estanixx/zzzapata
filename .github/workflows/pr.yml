@@ -1,0 +1,184 @@
+# Runs on every pull request: calls the shared `ci.yml` quality gate, then —
+# only for PRs from this repository (never forks) and only if CI passed —
+# assumes the read-only plan role via OIDC, runs `terraform plan` against
+# `environments/prod`, and posts/updates a single sticky PR comment with the
+# result (design doc, Engram `sdd/ci-cd-skeleton/design`, "sticky comment
+# mechanism").
+#
+# `concurrency` below shares its group name with cd.yml's, on purpose: both
+# workflows take an S3 native lock (`use_lockfile`) on the SAME state object
+# (`zzzapata/prod/terraform.tfstate`), and a plan and an apply racing for the
+# same lock fails loudly (PreconditionFailed / "Error acquiring the state
+# lock") rather than queueing. A shared group serializes plan/apply across
+# both workflows so only one runs at a time.
+name: pr
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.11.4"
+  PLAN_COMMENT_MARKER: "<!-- zzzapata:plan -->"
+
+jobs:
+  ci:
+    name: ci
+    uses: ./.github/workflows/ci.yml
+
+  plan:
+    name: plan
+    needs: ci
+    # Fork PRs cannot be trusted with credentials to this AWS account: OIDC
+    # role assumption is skipped outright rather than relying only on
+    # `pull_request` (vs. `pull_request_target`) semantics. `ci /` checks
+    # above still run and report for fork PRs; only this job is gated.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    concurrency:
+      group: zzzapata-terraform-state
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (plan role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      # Reuses scripts/tf-init.sh so the local and CI init commands can
+      # never drift apart. TF_STATE_BUCKET is a repo variable, not
+      # PR-controlled input, so passing it through the shell env here is
+      # safe.
+      - name: terraform init (environments/prod)
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        run: ./scripts/tf-init.sh environments/prod
+
+      # Plan output is written straight to a file, never interpolated into
+      # a shell string — Terraform resource attributes are attacker-
+      # influenceable via the PR diff itself (threat matrix: shell injection
+      # via untrusted content), so it must never pass through `${{ }}` into
+      # a `run:` block.
+      - name: terraform plan (environments/prod)
+        id: plan_prod
+        working-directory: environments/prod
+        run: |
+          set +e
+          terraform plan -no-color -input=false >"${GITHUB_WORKSPACE}/plan-prod.txt" 2>&1
+          echo "exitcode=$?" >>"$GITHUB_OUTPUT"
+          set -e
+          cat "${GITHUB_WORKSPACE}/plan-prod.txt"
+
+      - name: Upload plan artifact (environments/prod)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-environments-prod
+          path: plan-prod.txt
+          retention-days: 30
+
+      # Reads the plan file from disk (fs.readFileSync) and passes it to the
+      # GitHub API as a plain JS string — never re-entered into a shell, so
+      # backticks/`$(...)`/`${{ }}` in the plan output render literally in
+      # the comment instead of executing or expanding. Only the exit code
+      # and marker cross into the script, via `env:`.
+      - name: Post sticky plan comment
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PLAN_EXIT_CODE: ${{ steps.plan_prod.outputs.exitcode }}
+          PLAN_COMMENT_MARKER: ${{ env.PLAN_COMMENT_MARKER }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const marker = process.env.PLAN_COMMENT_MARKER;
+            const maxLen = 30000;
+
+            function readPlan(filename) {
+              try {
+                return fs.readFileSync(
+                  path.join(process.env.GITHUB_WORKSPACE, filename),
+                  'utf8'
+                );
+              } catch (err) {
+                return `(failed to read ${filename}: ${err.message})`;
+              }
+            }
+
+            function renderSection(root, exitCode, planText, artifactName) {
+              let text = planText;
+              let truncated = false;
+              if (text.length > maxLen) {
+                text = text.slice(0, maxLen);
+                truncated = true;
+              }
+              const status = exitCode === '0' ? 'Plan succeeded' : `Plan failed (exit ${exitCode})`;
+              const lines = [
+                `### Terraform Plan — \`${root}\``,
+                `**${status}**`,
+                '',
+                '```diff',
+                text,
+                '```',
+              ];
+              if (truncated) {
+                lines.push('', `_Output truncated at ${maxLen} characters — see the \`${artifactName}\` workflow artifact for the full plan._`);
+              }
+              return lines.join('\n');
+            }
+
+            const prodText = readPlan('plan-prod.txt');
+
+            const body = [
+              marker,
+              renderSection('environments/prod', process.env.PLAN_EXIT_CODE, prodText, 'terraform-plan-environments-prod'),
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const existing = comments.find(
+              (c) => c.user.type === 'Bot' && c.body && c.body.startsWith(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail job if the plan errored
+        if: steps.plan_prod.outputs.exitcode != '0'
+        run: exit 1

@@ -1,0 +1,134 @@
+# Reusable quality-gate workflow. `workflow_call` ONLY — never triggered
+# directly (no `push`/`pull_request` trigger). `pr.yml` and `cd.yml` both
+# `uses:` this workflow so the plan-time and apply-time gates can never
+# diverge (design doc, Engram `sdd/ci-cd-skeleton/design`).
+#
+# Job ids below (fmt, validate, tflint, checkov) are deliberate: when a
+# caller workflow invokes this one from a job named `ci`, GitHub renders
+# each job's check name as "<caller job id> / <this job's name>" — i.e.
+# "ci / fmt", "ci / validate", "ci / tflint", "ci / checkov". Branch
+# protection required checks (post-merge, design D3) depend on these exact
+# names.
+#
+# Deliberately absent: a Docker/container build or lint job. `container/`
+# does not exist in this repo yet (spec C2) — this gap is temporary and is
+# called out in the PR description, not silently omitted.
+name: ci
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.11.4"
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt -check -recursive
+        run: terraform fmt -check -recursive
+
+  validate-matrix:
+    name: validate-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        root:
+          - bootstrap
+          - environments/prod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      # -backend=false: neither root needs real backend credentials to
+      # validate syntax/types. environments/prod has a real S3 backend, but
+      # it still validates fine without initializing it.
+      - name: terraform init -backend=false
+        working-directory: ${{ matrix.root }}
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        working-directory: ${{ matrix.root }}
+        run: terraform validate
+
+  # Gate job: GitHub renders each matrix leg above as its own check
+  # ("ci / validate-matrix (bootstrap)", etc.), so branch protection cannot
+  # require a single "ci / validate" from the matrix job directly. This job
+  # depends on every leg and only succeeds if all of them did, giving the
+  # required-checks list (design D3) the single stable name it expects.
+  validate:
+    name: validate
+    needs: validate-matrix
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check matrix result
+        run: |
+          if [ "${{ needs.validate-matrix.result }}" != "success" ]; then
+            echo "validate-matrix did not succeed: ${{ needs.validate-matrix.result }}"
+            exit 1
+          fi
+
+  tflint:
+    name: tflint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: Init tflint plugins
+        run: tflint --init
+        env:
+          # Avoids GitHub API rate limiting when downloading the aws plugin.
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # Recursive + default severity: any finding fails the step (blocking).
+      - name: tflint --recursive
+        run: tflint --recursive --format compact
+
+  checkov:
+    name: checkov
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install checkov
+        run: pip install checkov
+
+      # `.checkov.yml` already exists on `main` (repo-meta slice), so the
+      # `--config-file` flag is passed unconditionally, unlike a bootstrap-era
+      # `if [ -f ]` guard. That file already sets `download-external-modules:
+      # false`, so no `--download-external-modules` flag is passed here.
+      - name: Run checkov
+        run: checkov --directory . --framework terraform --config-file .checkov.yml --compact
