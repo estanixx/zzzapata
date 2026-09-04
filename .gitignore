@@ -1,0 +1,27 @@
+# Local tooling caches — not project content
+.atl/
+.codegraph/
+
+# Python (container test suites land in a later slice)
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# checkov --download-external-modules cache
+.external_modules/
+
+# Container image build artifacts
+builds/
