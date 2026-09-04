@@ -143,14 +143,14 @@ bootstrap/                 trust anchor (OIDC IAM roles, ECR repo) — remote
   iam.tf                     2 OIDC roles (plan/apply), 3 permissions boundaries
   ecr.tf                     zzzapata-join-bot (IMMUTABLE, scan-on-push)
   README.md                  manual apply runbook
-environments/prod/         (not yet created — slice 2+) runtime infra root,
-                            key zzzapata/prod/terraform.tfstate
-modules/                    (not yet created) efs-chrome-profile, ecs-join-bot,
-                            scheduler — see .tflint.hcl's comment. No network
-                            module: environments/prod takes vpc_id and
-                            public_subnet_ids as external inputs (README §9).
+environments/prod/         runtime infra root, key zzzapata/prod/terraform.tfstate.
+                            Inputs: project_name, aws_region, profile only.
+modules/                    (not yet created) network, efs-chrome-profile,
+                            ecs-join-bot, scheduler — see .tflint.hcl's comment.
+                            environments/prod calls modules/network internally;
+                            the VPC is owned by this repo, not an external input.
 scripts/tf-init.sh          wraps terraform init for a root's partial S3 backend
-.github/workflows/          (not yet created — slice ci-cd-skeleton)
+.github/workflows/          ci.yml (reusable), pr.yml (plan), cd.yml (apply)
 .tflint.hcl                 aws ruleset pinned 0.48.0
 .checkov.yml                repo-root checkov skip-list, with rationale per finding
 ```
