@@ -1,0 +1,27 @@
+framework: [terraform]
+compact: true
+# zzzapata has zero Terraform Registry modules in this slice, so external-module
+# download is a pure network dependency with no benefit. Flip to true when a
+# registry module first lands.
+download-external-modules: false
+skip-check:
+  # --- bootstrap/ OIDC roles (iam.tf) ---
+  - CKV_AWS_60    # Role assumable by a federated principal: that IS the OIDC design; aud+sub StringEquals are the control.
+  - CKV_AWS_61    # Wildcard in assume-role policy: sub is pinned with StringEquals on immutable org/repo IDs; no wildcard remains.
+  - CKV_AWS_109   # Permissions management without constraint: the apply role must create ECS/scheduler roles; constrained by role/zzzapata-* + the PermissionsBoundary condition.
+  - CKV_AWS_111   # Write access without constraint: EFS/VPC/ENI ARNs are AWS-generated and cannot be pre-enumerated; capped by zzzapata-apply-boundary.
+  - CKV_AWS_355   # "*" resource for restrictable actions: ecs:RegisterTaskDefinition, ssm:DescribeParameters, ecr:GetAuthorizationToken, ec2:Describe* have no IAM resource-level support.
+  # --- bootstrap/ permissions-boundary documents (runtime_boundary, apply_boundary) ---
+  # A boundary is a CEILING, not a grant: broad Allow plus explicit Deny. Real
+  # least privilege is the intersection with each role's identity policy, which
+  # checkov scores separately and cannot see from the boundary document alone.
+  - CKV2_AWS_40   # Full IAM privileges — boundary ceiling.
+  - CKV_AWS_1     # "*-*" admin privileges — boundary ceiling.
+  - CKV_AWS_49    # Wildcard actions — boundary ceiling.
+  - CKV_AWS_107   # Credentials exposure — boundary ceiling.
+  - CKV_AWS_108   # Data exfiltration — boundary ceiling / plan role's read-only Get*/List*.
+  - CKV_AWS_110   # Privilege escalation — boundary ceiling; the real cap is the apply role's own scoped identity policy.
+  - CKV_AWS_356   # Wildcard resource for restrictable actions — boundary ceiling / non-scopable reads.
+  # --- bootstrap/ecr.tf ---
+  - CKV_AWS_136   # ECR KMS CMK: AES256 (AWS-managed); no CMK exists in this account, and both OIDC roles would need kms grants on one.
+  # NOT skipped, deliberately: CKV_AWS_51 (immutable tags) and CKV_AWS_163 (scan on push) — ecr.tf satisfies both.
