@@ -145,8 +145,10 @@ bootstrap/                 trust anchor (OIDC IAM roles, ECR repo) — remote
   README.md                  manual apply runbook
 environments/prod/         (not yet created — slice 2+) runtime infra root,
                             key zzzapata/prod/terraform.tfstate
-modules/                    (not yet created) network, efs-chrome-profile,
-                            ecs-join-bot, scheduler — see .tflint.hcl's comment
+modules/                    (not yet created) efs-chrome-profile, ecs-join-bot,
+                            scheduler — see .tflint.hcl's comment. No network
+                            module: environments/prod takes vpc_id and
+                            public_subnet_ids as external inputs (README §9).
 scripts/tf-init.sh          wraps terraform init for a root's partial S3 backend
 .github/workflows/          (not yet created — slice ci-cd-skeleton)
 .tflint.hcl                 aws ruleset pinned 0.48.0
