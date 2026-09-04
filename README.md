@@ -236,23 +236,14 @@ variable "aws_region" {
   default = "us-east-1"
 }
 
-variable "vpc_id" {
-  type = string
+variable "profile" {
+  default = ""
 }
 
-variable "public_subnet_ids" {
-  description = "Subnets publicas para la tarea (sin NAT, con IP publica asignada)"
-  type        = list(string)
-}
-
-variable "task_cpu" {
-  default = 1024
-}
-
-variable "task_memory" {
-  default = 2048
-}
+# task_cpu / task_memory se agregan cuando entre modules/ecs-join-bot.
 ```
+
+> La VPC y las subnets públicas **las crea este repo**: `environments/prod` llama a `modules/network` internamente. No se reciben `vpc_id` ni `public_subnet_ids` como entradas externas.
 
 ---
 
@@ -260,7 +251,7 @@ variable "task_memory" {
 
 - ¿Reuniones recurrentes (mismo horario semanal) o ad-hoc? Cambia el diseño del scheduler (schedule recurrente vs. creado dinámicamente vía API/Lambda).
 - ¿Quién dispara la creación de cada schedule? Terraform estático vs. una Lambda/API que los agrega desde un calendario.
-- Nombre real de la VPC/subnets públicas a usar, o si hay que crear una VPC nueva mínima solo para este proyecto.
+- ~~Nombre real de la VPC/subnets...~~ **Resuelto**: el repo crea su propia VPC mínima vía `modules/network`.
 - Notificación de fallos: ¿SNS a email, Slack webhook, otro?
 - ¿El repo ya existe en GitHub? Necesito el `org/repo` exacto para configurar el OIDC trust policy en `bootstrap/github_oidc.tf`.
 
