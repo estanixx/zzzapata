@@ -1,0 +1,5 @@
+# Auto-requests review from the whole team on every PR. GitHub never allows a
+# PR author to approve their own PR, so this is safe as a blanket rule —
+# whoever opens the PR is automatically excluded from satisfying the review
+# requirement with their own approval.
+* @estanixx

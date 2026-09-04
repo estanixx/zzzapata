@@ -98,8 +98,8 @@ zzzapata/
 │   ├── backend.tf                # backend propio (state key separado)
 │   ├── providers.tf
 │   ├── ecr.tf                    # repo de imagenes del bot
-│   ├── github_oidc.tf            # OIDC provider + IAM role p/ GitHub Actions
-│   ├── state_lock.tf             # dynamodb lock table (si no existe ya)
+│   ├── github_oidc.tf            # data source al OIDC provider existente (no se crea uno nuevo)
+│   ├── iam.tf                    # roles OIDC (plan/apply) + permissions boundaries
 │   ├── variables.tf
 │   └── outputs.tf
 │
@@ -166,7 +166,7 @@ Trigger: `pull_request` hacia `main`.
 Trigger: `push` a `main` (post-merge).
 1. Llama a `ci.yml` (mismo chequeo, nunca se saltea)
 2. `terraform apply -auto-approve` en `environments/prod`
-3. `docker build` + tag (`<git-sha>` y `latest`) + push a ECR
+3. `docker build` + tag `<git-sha>` (únicamente — el repo ECR es `IMMUTABLE`, no admite tags mutables como `latest`) + push a ECR
 4. Si cambió el hash de la imagen, fuerza nueva `task_definition` revision (Terraform ya lo maneja si el `image` tag está parametrizado con el sha)
 
 Ambos pipelines (`pr` y `cd`) corren sobre el mismo `environments/prod` — no hay ambiente de staging en esta fase; si se necesita luego, se agrega `environments/staging/` con su propio state key y se replica el patrón.
